@@ -15,6 +15,7 @@ monitor_once.py. No compra si ja tens una posició oberta en aquell actiu
 """
 
 import os
+import requests
 from dotenv import load_dotenv
 
 from alpaca.trading.client import TradingClient
@@ -26,9 +27,6 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
-
-import os
-import requests
 
 def enviar_telegram(missatge):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -117,7 +115,7 @@ def ja_tinc_posicio(symbol: str) -> bool:
         return False  # no hi ha posició oberta per aquest símbol
 
 
-def comprar(symbol: str, preu_actual: float):
+def comprar(symbol: str, preu_actual: float, rsi: float):
     quantitat = round(ASSIGNACIO_PER_ACTIU / preu_actual, 4)
     order_data = MarketOrderRequest(
         symbol=symbol,
@@ -130,26 +128,56 @@ def comprar(symbol: str, preu_actual: float):
         f"✅ COMPRA per senyal RSI: {quantitat} de {symbol} "
         f"(~{ASSIGNACIO_PER_ACTIU}$) — ID ordre: {ordre.id}"
     )
+    # Notificació de compra realitzada a Telegram:
+    msg = (
+        f"🟢 **COMPRA REALITZADA**\n"
+        f"• **Símbol:** `{symbol}`\n"
+        f"• **Quantitat:** `{quantitat}`\n"
+        f"• **Preu:** `${preu_actual:.2f}`\n"
+        f"• **RSI:** `{rsi:.1f}`"
+    )
+    enviar_telegram(msg)
 
 
 def revisar_oportunitats():
-    for symbol in WATCHLIST:
-        if ja_tinc_posicio(symbol):
-            print(f"{symbol}: ja tens posició oberta, no es revisa RSI.")
-            continue
+    informacio_actius = []
+    compra_efectuada = False
 
+    for symbol in WATCHLIST:
+        posicio_oberta = ja_tinc_posicio(symbol)
         rsi, preu_actual = obtenir_rsi_actual(symbol)
-        if rsi is None:
+
+        if rsi is None or preu_actual is None:
             print(f"{symbol}: dades insuficients per calcular l'RSI.")
+            informacio_actius.append(f"• **{symbol}**: Sense dades")
             continue
 
         print(f"{symbol}: RSI={rsi:.1f} | preu={preu_actual:.2f}$")
 
+        if posicio_oberta:
+            print(f"{symbol}: ja tens posició oberta, no es compra.")
+            informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}` *(Posició oberta)*")
+            continue
+
+        informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}`")
+
         if rsi < RSI_SOBREVENUT:
             print(f"🟢 {symbol}: RSI sobrevenut ({rsi:.1f}). Comprant...")
-            comprar(symbol, preu_actual)
+            comprar(symbol, preu_actual, rsi)
+            compra_efectuada = True
         else:
             print(f"{symbol}: sense senyal de compra (RSI {rsi:.1f}).")
+
+    # Si no s'ha comprat res, enviem el resum de les 4 variables:
+    if not compra_efectuada:
+        llista_text = "\n".join(informacio_actius)
+        msg_resum = (
+            f"ℹ️ **Sense operacions de compra**\n"
+            f"No s'ha complert cap condició de compra.\n\n"
+            f"📊 **Estat de les 4 variables:**\n"
+            f"{llista_text}"
+        )
+        enviar_telegram(msg_resum)
 
 
 if __name__ == "__main__":
