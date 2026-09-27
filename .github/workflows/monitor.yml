@@ -2,12 +2,8 @@ name: Monitor Alpaca Paper Trading
 
 on:
   schedule:
-    # Cada 15 minuts. Nota: GitHub pot retardar-se uns minuts en hores punta,
-    # és normal i no té impacte real en una estratègia de marges del 5-10%.
     - cron: "*/15 * * * *"
   workflow_dispatch:
-    # Permet llançar-ho manualment des de la pestanya "Actions" de GitHub,
-    # útil per provar-ho sense esperar els 15 minuts.
 
 jobs:
   monitor:
@@ -39,3 +35,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 monitor_once.py
+
+      # PAS DE PROVA DIRECTE A TELEGRAM:
+      - name: Enviar prova a Telegram
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: "🧪 Prova de connexió amb Telegram des de GitHub Actions!"
