@@ -35,3 +35,34 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python3 monitor_once.py
+name: Executar Trading Bot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descarregar codi
+        uses: actions/checkout@v3
+
+      - name: Configurar Python (o la teva plataforma)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Executar el bot
+        run: python main.py
+
+      # AQUEST ÉS EL PAS DE TELEGRAM QUE HAS D'AFEGIR AL FINAL:
+      - name: Notificar per Telegram
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            🤖 **Trading Bot Executat!**
+            El bot s'ha executat amb èxit.
