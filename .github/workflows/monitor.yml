@@ -1,0 +1,31 @@
+name: Monitor Alpaca Paper Trading
+
+on:
+  schedule:
+    # Cada 15 minuts. Nota: GitHub pot retardar-se uns minuts en hores punta,
+    # és normal i no té impacte real en una estratègia de marges del 5-10%.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    # Permet llançar-ho manualment des de la pestanya "Actions" de GitHub,
+    # útil per provar-ho sense esperar els 15 minuts.
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar el repositori
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instal·lar dependències
+        run: pip install -r requirements.txt
+
+      - name: Executar la comprovació de posicions
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python3 monitor_once.py
