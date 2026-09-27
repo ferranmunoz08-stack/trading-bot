@@ -26,7 +26,8 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 if not API_KEY or not SECRET_KEY:
     raise RuntimeError("Falten ALPACA_API_KEY / ALPACA_SECRET_KEY (variables d'entorn).")
 
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+# ⚠️ LIVE TRADING: paper=False -> diners REALS.
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=False)
 
 # ---------------------------------------------------------------------------
 # Configuració del risc (ajusta-ho segons la teva estratègia)

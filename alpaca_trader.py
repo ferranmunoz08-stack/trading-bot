@@ -49,8 +49,9 @@ if not API_KEY or not SECRET_KEY:
         "ALPACA_SECRET_KEY (veure .env.example)."
     )
 
-# paper=True -> apunta sempre al compte de simulació (Paper Trading)
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+# ⚠️ LIVE TRADING: paper=False -> diners REALS. Assegura't que ALPACA_API_KEY
+# i ALPACA_SECRET_KEY siguin les claus de LIVE (no les de Paper) abans d'usar-ho.
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=False)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # ---------------------------------------------------------------------------
