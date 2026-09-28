@@ -2,7 +2,12 @@
 auto_trader.py
 --------------
 Decideix AUTOMÀTICAMENT quan comprar, basant-se en l'indicador tècnic RSI
-(Relative Strength Index), per a una cistella diversificada d'actius.
+(Relative Strength Index), per a una cistella dinàmica d'actius.
+
+Configuració d'alta activitat:
+  - Watchlist: NVDA, TSLA, AAPL, AMD (actius amb més moviment)
+  - RSI Període: 7 (més sensible als moviments d'avui)
+  - RSI Sobrevenut: < 40 (facilita les entrades de compra)
 """
 
 import os
@@ -18,6 +23,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
+
 
 def enviar_telegram(missatge):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -35,6 +41,7 @@ def enviar_telegram(missatge):
         except Exception as e:
             print(f"Error enviant a Telegram: {e}")
 
+
 load_dotenv()
 
 API_KEY = os.getenv("ALPACA_API_KEY")
@@ -47,15 +54,19 @@ if not API_KEY or not SECRET_KEY:
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=False)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
+# ---------------------------------------------------------------------------
+# Configuració ajustada per a MÉS ACTIVITAT de trading
+# ---------------------------------------------------------------------------
 CAPITAL_SIMULAT = 100.0
-WATCHLIST = ["AAPL", "JNJ", "KO", "XOM"]
-ASSIGNACIO_PER_ACTIU = CAPITAL_SIMULAT / len(WATCHLIST)
+WATCHLIST = ["NVDA", "TSLA", "AAPL", "AMD"]   # Empreses volàtils i amb moviment diari
+ASSIGNACIO_PER_ACTIU = CAPITAL_SIMULAT / len(WATCHLIST)  # 25$ cadascuna
 
-RSI_PERIODE = 14
-RSI_SOBREVENUT = 30
+RSI_PERIODE = 7          # Reduït de 14 a 7 per respondre més ràpid
+RSI_SOBREVENUT = 40      # Pujat de 30 a 40 per generar senyals de compra més sovint
 
 
 def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
+    """Calcula l'RSI (mètode de Wilder) a partir d'una llista de preus de tancament."""
     if len(preus_tancament) < periode + 1:
         return None
 
@@ -68,21 +79,23 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
     mitjana_guany = sum(guanys[-periode:]) / periode
     mitjana_perdua = sum(perdues[-periode:]) / periode
 
-    if mitjana_perdua == 0: return 100.0
+    if mitjana_perdua == 0:
+        return 100.0
+
     rs = mitjana_guany / mitjana_perdua
     return 100 - (100 / (1 + rs))
 
 
 def obtenir_rsi_i_preu_actual(symbol: str):
+    """Obté el preu d'Alpaca mitjançant Snapshot i calcula el RSI de 7 períodes."""
     preu_actual = None
 
-    # 1. Fem un Snapshot (Trade, Quote i Daily tot en un sol pas, amb IEX per evitar errors)
+    # 1. Foto instantània del mercat (Trade/Quote/Daily)
     try:
         req_snap = StockSnapshotRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         snap = data_client.get_stock_snapshot(req_snap)
         if symbol in snap:
             dades = snap[symbol]
-            # Prioritzem Trade real > Cotització Bid/Ask > Tancament diari
             if dades.latest_trade and dades.latest_trade.price > 0:
                 preu_actual = float(dades.latest_trade.price)
             elif dades.latest_quote and (dades.latest_quote.ask_price > 0 or dades.latest_quote.bid_price > 0):
@@ -96,7 +109,7 @@ def obtenir_rsi_i_preu_actual(symbol: str):
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
-        start=datetime.now() - timedelta(days=30),
+        start=datetime.now() - timedelta(days=20),
         feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
@@ -106,15 +119,17 @@ def obtenir_rsi_i_preu_actual(symbol: str):
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # 3. Fallback d'emergència
+    # 3. Fallback en cas que falli la cotització en temps real
     if preu_actual is None or preu_actual == 0:
-        if tancaments: preu_actual = tancaments[-1]
+        if tancaments:
+            preu_actual = tancaments[-1]
 
-    rsi = calcular_rsi(tancaments)
+    rsi = calcular_rsi(tancaments, periode=RSI_PERIODE)
     return rsi, preu_actual
 
 
 def obtenir_informacio_compte():
+    """Retorna l'equity (total) i l'efectiu disponible del compte d'Alpaca."""
     try:
         account = trading_client.get_account()
         return float(account.equity), float(account.cash)
@@ -122,19 +137,24 @@ def obtenir_informacio_compte():
         print(f"⚠️ Error obtenint dades del compte: {e}")
         return None, None
 
+
 def mercat_esta_obert() -> bool:
+    """Comprova si la borsa dels EUA està actualment oberta."""
     try:
         clock = trading_client.get_clock()
         return clock.is_open
     except Exception:
         return False
 
+
 def ja_tinc_posicio(symbol: str) -> bool:
+    """Comprova si ja tenim una posició oberta per a aquest actiu."""
     try:
         trading_client.get_open_position(symbol)
         return True
     except Exception:
         return False
+
 
 def comprar(symbol: str, preu_actual: float, rsi: float):
     quantitat = round(ASSIGNACIO_PER_ACTIU / preu_actual, 4)
@@ -145,6 +165,10 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
         time_in_force=TimeInForce.DAY,
     )
     ordre = trading_client.submit_order(order_data)
+    print(
+        f"✅ COMPRA per senyal RSI ({rsi:.1f}): {quantitat} de {symbol} "
+        f"(~{ASSIGNACIO_PER_ACTIU}$) — ID ordre: {ordre.id}"
+    )
     
     equity, cash = obtenir_informacio_compte()
     text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total: `${equity:.2f}`\n• Disponible: `${cash:.2f}`" if equity is not None else ""
@@ -154,7 +178,7 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
         f"• **Símbol:** `{symbol}`\n"
         f"• **Quantitat:** `{quantitat}`\n"
         f"• **Preu:** `${preu_actual:.2f}`\n"
-        f"• **RSI:** `{rsi:.1f}`"
+        f"• **RSI (7):** `{rsi:.1f}`"
         f"{text_compte}"
     )
     enviar_telegram(msg)
@@ -169,18 +193,26 @@ def revisar_oportunitats():
         rsi, preu_actual = obtenir_rsi_i_preu_actual(symbol)
 
         if rsi is None or preu_actual is None:
+            print(f"{symbol}: dades insuficients.")
             informacio_actius.append(f"• **{symbol}**: Sense dades")
             continue
 
+        print(f"{symbol}: RSI(7)={rsi:.1f} | Preu={preu_actual:.2f}$")
+
         if posicio_oberta:
+            print(f"{symbol}: ja tenim posició oberta, no es compra.")
             informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}` *(Posició oberta)*")
             continue
 
         informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}`")
 
+        # Senyal de compra: RSI < 40
         if rsi < RSI_SOBREVENUT:
+            print(f"🟢 {symbol}: RSI sobrevenut ({rsi:.1f} < {RSI_SOBREVENUT}). Executant compra...")
             comprar(symbol, preu_actual, rsi)
             compra_efectuada = True
+        else:
+            print(f"{symbol}: sense senyal de compra (RSI {rsi:.1f}).")
 
     if not compra_efectuada:
         llista_text = "\n".join(informacio_actius)
@@ -191,11 +223,14 @@ def revisar_oportunitats():
         msg_resum = (
             f"ℹ️ **Sense operacions de compra**\n"
             f"Estat: {estat_mercat}\n\n"
-            f"📊 **Variables:**\n"
+            f"📊 **Variables (RSI < 40 per comprar):**\n"
             f"{llista_text}"
             f"{text_compte}"
         )
         enviar_telegram(msg_resum)
 
+
 if __name__ == "__main__":
+    print("🤖 Revisant senyals de compra (RSI 7) a la cistella dinàmica...")
     revisar_oportunitats()
+    print("✅ Revisió finalitzada.")
