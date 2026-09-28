@@ -175,7 +175,7 @@ def revisar_oportunitats():
             continue
 
         # Preu en directe (l'RSI segueix basant-se en tancaments diaris)
-        preu_actual = obtenir_preu_actual(symbol)
+        preu_actual = obtenir_preu_actual(symbol, ultim_tancament)
 
         print(f"{symbol}: RSI={rsi:.1f} | preu={preu_actual:.2f}$")
 
