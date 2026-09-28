@@ -2,8 +2,10 @@ name: Monitor Alpaca Paper Trading
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch:
+    # S'executa cada 15 minuts entre les 13:00 UTC i les 20:00 UTC (horari de borsa dels EUA)
+    - cron: '*/15 13-20 * * 1-5'
+  workflow_dispatch: # Permet executar-ho manualment quan vulguis
+
 
 jobs:
   monitor:
