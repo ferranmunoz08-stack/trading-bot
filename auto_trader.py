@@ -98,23 +98,42 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
     return 100 - (100 / (1 + rs))
 
 
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+
 def obtenir_rsi_actual(symbol: str):
-    """Descarrega les últimes barres diàries i calcula l'RSI actual.
-    Retorna (rsi, ultim_tancament_diari)."""
+    """Descarrega barres d'1 hora per tenir un RSI que canviï durant la jornada i el preu actual."""
+    
+    # 1. Obtenir el preu en temps real directament (Quote)
+    preu_actual = None
+    try:
+        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        quote_resp = data_client.get_stock_latest_quote(quote_request)
+        if symbol in quote_resp:
+            preu_actual = float(quote_resp[symbol].ask_price or quote_resp[symbol].bid_price)
+    except Exception as e:
+        print(f"⚠️ {symbol}: error obtenint el preu en temps real: {e}")
+
+    # 2. Obtenir barres d'1 hora per calcular l'RSI intradiari
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
-        timeframe=TimeFrame.Day,
-        start=datetime.now() - timedelta(days=90),  # marge ampli de dies
-        feed=DataFeed.IEX,  # feed gratuït
+        timeframe=TimeFrame.Hour,  # Utilitzem barres d'1 hora
+        start=datetime.now() - timedelta(days=15),
+        feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
 
     if symbol not in resposta.data or not resposta.data[symbol]:
-        print(f"⚠️ {symbol}: no s'han rebut dades històriques (resposta buida).")
-        return None, None
+        print(f"⚠️ {symbol}: no s'han rebut dades històriques.")
+        return None, preu_actual
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
-    return calcular_rsi(tancaments), tancaments[-1] if tancaments else None
+    
+    # Si no hem pogut obtenir el preu directament, agafem el darrer tancament
+    if preu_actual is None or preu_actual == 0:
+        preu_actual = tancaments[-1] if tancaments else None
+
+    return calcular_rsi(tancaments), preu_actual
+
 
 
 def obtenir_preu_actual(symbol: str, preu_de_reserva: float):
