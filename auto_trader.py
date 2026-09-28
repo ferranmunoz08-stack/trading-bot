@@ -9,9 +9,6 @@ Lògica:
   - RSI > 70  -> l'actiu està "sobrecomprat" -> no comprem (i si ja hi ets,
                  el propi monitor_once.py se n'ocuparà si toca el Take-Profit)
 
-L'RSI es calcula amb preus de tancament diaris, però el PREU mostrat i usat
-per calcular la quantitat a comprar és l'últim preu negociat (en directe).
-
 Pensat per executar-se periòdicament (via GitHub Actions), abans de
 monitor_once.py. No compra si ja tens una posició oberta en aquell actiu
 (evita duplicar compres cada 15 minuts).
@@ -30,12 +27,6 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
-from alpaca.data.requests import StockLatestTradeRequest
-
-def obtenir_preu_actual(symbol: str):
-    req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-    return float(data_client.get_stock_latest_trade(req)[symbol].price)
-
 
 def enviar_telegram(missatge):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -98,54 +89,51 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
     return 100 - (100 / (1 + rs))
 
 
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
-
-def obtenir_rsi_actual(symbol: str):
-    """Descarrega barres d'1 hora per tenir un RSI que canviï durant la jornada i el preu actual."""
-    
-    # 1. Obtenir el preu en temps real directament (Quote)
+def obtenir_rsi_i_preu_actual(symbol: str):
+    """Obté el preu exacte en temps real i el RSI basat en barres d'1 hora."""
     preu_actual = None
-    try:
-        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        quote_resp = data_client.get_stock_latest_quote(quote_request)
-        if symbol in quote_resp:
-            preu_actual = float(quote_resp[symbol].ask_price or quote_resp[symbol].bid_price)
-    except Exception as e:
-        print(f"⚠️ {symbol}: error obtenint el preu en temps real: {e}")
 
-    # 2. Obtenir barres d'1 hora per calcular l'RSI intradiari
+    # 1. Obtenir l'últim preu realitzat a la borsa (temps real)
+    try:
+        trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        trade_resp = data_client.get_stock_latest_trade(trade_req)
+        if symbol in trade_resp:
+            preu_actual = float(trade_resp[symbol].price)
+    except Exception as e:
+        print(f"⚠️ {symbol}: error obtenint preu en temps real: {e}")
+
+    # 2. Obtenir barres d'1 hora per a un RSI dinàmic durant la jornada
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
-        timeframe=TimeFrame.Hour,  # Utilitzem barres d'1 hora
+        timeframe=TimeFrame.Hour,
         start=datetime.now() - timedelta(days=15),
         feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
 
     if symbol not in resposta.data or not resposta.data[symbol]:
-        print(f"⚠️ {symbol}: no s'han rebut dades històriques.")
+        print(f"⚠️ {symbol}: no s'han rebut dades històriques (resposta buida).")
         return None, preu_actual
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # Si no hem pogut obtenir el preu directament, agafem el darrer tancament
-    if preu_actual is None or preu_actual == 0:
-        preu_actual = tancaments[-1] if tancaments else None
+    # Si ha fallat la cerca de preu en temps real, fem servir la darrera barra d'hora
+    if preu_actual is None and tancaments:
+        preu_actual = tancaments[-1]
 
     return calcular_rsi(tancaments), preu_actual
 
 
-
-def obtenir_preu_actual(symbol: str, preu_de_reserva: float):
-    """Retorna l'últim preu negociat (en directe). Si falla, usa el preu de reserva
-    (l'últim tancament diari) perquè el bot no es quedi sense preu."""
+def obtenir_informacio_compte():
+    """Retorna l'equity (total) i l'efectiu disponible del compte d'Alpaca."""
     try:
-        req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        return float(data_client.get_stock_latest_trade(req)[symbol].price)
+        account = trading_client.get_account()
+        equity = float(account.equity)
+        cash = float(account.cash)
+        return equity, cash
     except Exception as e:
-        print(f"⚠️ {symbol}: no s'ha pogut obtenir el preu en directe ({e}). "
-              f"Faig servir l'últim tancament.")
-        return preu_de_reserva
+        print(f"⚠️ Error obtenint dades del compte: {e}")
+        return None, None
 
 
 def ja_tinc_posicio(symbol: str) -> bool:
@@ -169,13 +157,17 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
         f"✅ COMPRA per senyal RSI: {quantitat} de {symbol} "
         f"(~{ASSIGNACIO_PER_ACTIU}$) — ID ordre: {ordre.id}"
     )
-    # Notificació de compra realitzada a Telegram:
+    
+    equity, cash = obtenir_informacio_compte()
+    text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total: `${equity:.2f}`\n• Disponible: `${cash:.2f}`" if equity is not None else ""
+
     msg = (
         f"🟢 **COMPRA REALITZADA**\n"
         f"• **Símbol:** `{symbol}`\n"
         f"• **Quantitat:** `{quantitat}`\n"
         f"• **Preu:** `${preu_actual:.2f}`\n"
         f"• **RSI:** `{rsi:.1f}`"
+        f"{text_compte}"
     )
     enviar_telegram(msg)
 
@@ -186,15 +178,12 @@ def revisar_oportunitats():
 
     for symbol in WATCHLIST:
         posicio_oberta = ja_tinc_posicio(symbol)
-        rsi, ultim_tancament = obtenir_rsi_actual(symbol)
+        rsi, preu_actual = obtenir_rsi_i_preu_actual(symbol)
 
-        if rsi is None or ultim_tancament is None:
-            print(f"{symbol}: dades insuficients per calcular l'RSI.")
+        if rsi is None or preu_actual is None:
+            print(f"{symbol}: dades insuficients per calcular l'RSI o preu.")
             informacio_actius.append(f"• **{symbol}**: Sense dades")
             continue
-
-        # Preu en directe (l'RSI segueix basant-se en tancaments diaris)
-        preu_actual = obtenir_preu_actual(symbol, ultim_tancament)
 
         print(f"{symbol}: RSI={rsi:.1f} | preu={preu_actual:.2f}$")
 
@@ -212,14 +201,18 @@ def revisar_oportunitats():
         else:
             print(f"{symbol}: sense senyal de compra (RSI {rsi:.1f}).")
 
-    # Si no s'ha comprat res, enviem el resum de les 4 variables:
+    # Si no s'ha comprat res, enviem el resum de les 4 variables i el saldo del compte:
     if not compra_efectuada:
         llista_text = "\n".join(informacio_actius)
+        equity, cash = obtenir_informacio_compte()
+        text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total cartera: `${equity:.2f}`\n• En efectiu: `${cash:.2f}`" if equity is not None else ""
+
         msg_resum = (
             f"ℹ️ **Sense operacions de compra**\n"
             f"No s'ha complert cap condició de compra.\n\n"
             f"📊 **Estat de les 4 variables:**\n"
             f"{llista_text}"
+            f"{text_compte}"
         )
         enviar_telegram(msg_resum)
 
