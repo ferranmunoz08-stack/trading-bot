@@ -30,6 +30,11 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
+from alpaca.data.requests import StockLatestTradeRequest
+
+def obtenir_preu_actual(symbol: str):
+    req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+    return float(data_client.get_stock_latest_trade(req)[symbol].price)
 
 
 def enviar_telegram(missatge):
