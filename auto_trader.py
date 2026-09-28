@@ -5,9 +5,9 @@ Decideix AUTOMÀTICAMENT quan comprar, basant-se en l'indicador tècnic RSI
 (Relative Strength Index), per a una cistella dinàmica d'actius.
 
 Configuració d'alta activitat:
-  - Watchlist: NVDA, TSLA, AAPL, AMD (actius amb més moviment)
-  - RSI Període: 7 (més sensible als moviments d'avui)
-  - RSI Sobrevenut: < 40 (facilita les entrades de compra)
+  - Watchlist: NVDA, TSLA, AAPL, AMD
+  - RSI Període: 7
+  - RSI Sobrevenut: < 40
 """
 
 import os
@@ -50,7 +50,7 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 if not API_KEY or not SECRET_KEY:
     raise RuntimeError("Falten ALPACA_API_KEY / ALPACA_SECRET_KEY (variables d'entorn).")
 
-# ⚠️ LIVE TRADING: paper=False -> diners REALS.
+# ⚠️ Canvia paper=True si utilitzes el compte de Paper Trading de prova
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=False)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
@@ -58,11 +58,11 @@ data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 # Configuració ajustada per a MÉS ACTIVITAT de trading
 # ---------------------------------------------------------------------------
 CAPITAL_SIMULAT = 100.0
-WATCHLIST = ["NVDA", "TSLA", "AAPL", "AMD"]   # Empreses volàtils i amb moviment diari
+WATCHLIST = ["NVDA", "TSLA", "AAPL", "AMD"]
 ASSIGNACIO_PER_ACTIU = CAPITAL_SIMULAT / len(WATCHLIST)  # 25$ cadascuna
 
-RSI_PERIODE = 7          # Reduït de 14 a 7 per respondre més ràpid
-RSI_SOBREVENUT = 40      # Pujat de 30 a 40 per generar senyals de compra més sovint
+RSI_PERIODE = 7
+RSI_SOBREVENUT = 40
 
 
 def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
@@ -90,7 +90,6 @@ def obtenir_rsi_i_preu_actual(symbol: str):
     """Obté el preu d'Alpaca mitjançant Snapshot i calcula el RSI de 7 períodes."""
     preu_actual = None
 
-    # 1. Foto instantània del mercat (Trade/Quote/Daily)
     try:
         req_snap = StockSnapshotRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         snap = data_client.get_stock_snapshot(req_snap)
@@ -105,7 +104,6 @@ def obtenir_rsi_i_preu_actual(symbol: str):
     except Exception as e:
         print(f"⚠️ {symbol}: error obtenint Snapshot ({e})")
 
-    # 2. Obtenir barres d'1 hora per calcular el RSI
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
@@ -119,7 +117,6 @@ def obtenir_rsi_i_preu_actual(symbol: str):
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # 3. Fallback en cas que falli la cotització en temps real
     if preu_actual is None or preu_actual == 0:
         if tancaments:
             preu_actual = tancaments[-1]
@@ -157,6 +154,20 @@ def ja_tinc_posicio(symbol: str) -> bool:
 
 
 def comprar(symbol: str, preu_actual: float, rsi: float):
+    equity, cash = obtenir_informacio_compte()
+
+    # 1. Validació de saldo en efectiu abans de fer la petició
+    if cash is not None and cash < ASSIGNACIO_PER_ACTIU:
+        msg_error = (
+            f"⚠️ **SENYAL DE COMPRA OMESA ({symbol})**\n"
+            f"• **RSI:** `{rsi:.1f}`\n"
+            f"• **Motiu:** Saldo insuficient en efectiu.\n"
+            f"• **Efectiu disponible:** `${cash:.2f}` (es necessiten `${ASSIGNACIO_PER_ACTIU:.2f}`)"
+        )
+        print(f"⚠️ Saldo insuficient per comprar {symbol}: ${cash:.2f} disponible.")
+        enviar_telegram(msg_error)
+        return
+
     quantitat = round(ASSIGNACIO_PER_ACTIU / preu_actual, 4)
     order_data = MarketOrderRequest(
         symbol=symbol,
@@ -164,24 +175,26 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY,
     )
-    ordre = trading_client.submit_order(order_data)
-    print(
-        f"✅ COMPRA per senyal RSI ({rsi:.1f}): {quantitat} de {symbol} "
-        f"(~{ASSIGNACIO_PER_ACTIU}$) — ID ordre: {ordre.id}"
-    )
-    
-    equity, cash = obtenir_informacio_compte()
-    text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total: `${equity:.2f}`\n• Disponible: `${cash:.2f}`" if equity is not None else ""
 
-    msg = (
-        f"🟢 **COMPRA REALITZADA**\n"
-        f"• **Símbol:** `{symbol}`\n"
-        f"• **Quantitat:** `{quantitat}`\n"
-        f"• **Preu:** `${preu_actual:.2f}`\n"
-        f"• **RSI (7):** `{rsi:.1f}`"
-        f"{text_compte}"
-    )
-    enviar_telegram(msg)
+    # 2. Execució d'ordre protegit contra excepcions
+    try:
+        ordre = trading_client.submit_order(order_data)
+        print(f"✅ COMPRA realitzada: {quantitat} de {symbol} (~{ASSIGNACIO_PER_ACTIU}$) — ID: {ordre.id}")
+
+        text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total: `${equity:.2f}`\n• Disponible: `${cash:.2f}`" if equity is not None else ""
+        msg = (
+            f"🟢 **COMPRA REALITZADA**\n"
+            f"• **Símbol:** `{symbol}`\n"
+            f"• **Quantitat:** `{quantitat}`\n"
+            f"• **Preu:** `${preu_actual:.2f}`\n"
+            f"• **RSI (7):** `{rsi:.1f}`"
+            f"{text_compte}"
+        )
+        enviar_telegram(msg)
+
+    except Exception as e:
+        print(f"❌ Error en executar la compra de {symbol}: {e}")
+        enviar_telegram(f"❌ **Error en la compra de {symbol}:** {e}")
 
 
 def revisar_oportunitats():
