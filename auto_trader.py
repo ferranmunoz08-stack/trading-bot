@@ -9,6 +9,9 @@ Lògica:
   - RSI > 70  -> l'actiu està "sobrecomprat" -> no comprem (i si ja hi ets,
                  el propi monitor_once.py se n'ocuparà si toca el Take-Profit)
 
+L'RSI es calcula amb preus de tancament diaris, però el PREU mostrat i usat
+per calcular la quantitat a comprar és l'últim preu negociat (en directe).
+
 Pensat per executar-se periòdicament (via GitHub Actions), abans de
 monitor_once.py. No compra si ja tens una posició oberta en aquell actiu
 (evita duplicar compres cada 15 minuts).
@@ -24,9 +27,10 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from datetime import datetime, timedelta
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
+
 
 def enviar_telegram(missatge):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -90,12 +94,13 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
 
 
 def obtenir_rsi_actual(symbol: str):
-    """Descarrega les últimes barres diàries i calcula l'RSI actual."""
+    """Descarrega les últimes barres diàries i calcula l'RSI actual.
+    Retorna (rsi, ultim_tancament_diari)."""
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Day,
         start=datetime.now() - timedelta(days=90),  # marge ampli de dies
-        feed=DataFeed.IEX,  # feed gratuït, disponible en comptes de paper
+        feed=DataFeed.IEX,  # feed gratuït
     )
     resposta = data_client.get_stock_bars(request)
 
@@ -105,6 +110,18 @@ def obtenir_rsi_actual(symbol: str):
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     return calcular_rsi(tancaments), tancaments[-1] if tancaments else None
+
+
+def obtenir_preu_actual(symbol: str, preu_de_reserva: float):
+    """Retorna l'últim preu negociat (en directe). Si falla, usa el preu de reserva
+    (l'últim tancament diari) perquè el bot no es quedi sense preu."""
+    try:
+        req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        return float(data_client.get_stock_latest_trade(req)[symbol].price)
+    except Exception as e:
+        print(f"⚠️ {symbol}: no s'ha pogut obtenir el preu en directe ({e}). "
+              f"Faig servir l'últim tancament.")
+        return preu_de_reserva
 
 
 def ja_tinc_posicio(symbol: str) -> bool:
@@ -145,12 +162,15 @@ def revisar_oportunitats():
 
     for symbol in WATCHLIST:
         posicio_oberta = ja_tinc_posicio(symbol)
-        rsi, preu_actual = obtenir_rsi_actual(symbol)
+        rsi, ultim_tancament = obtenir_rsi_actual(symbol)
 
-        if rsi is None or preu_actual is None:
+        if rsi is None or ultim_tancament is None:
             print(f"{symbol}: dades insuficients per calcular l'RSI.")
             informacio_actius.append(f"• **{symbol}**: Sense dades")
             continue
+
+        # Preu en directe (l'RSI segueix basant-se en tancaments diaris)
+        preu_actual = obtenir_preu_actual(symbol, ultim_tancament)
 
         print(f"{symbol}: RSI={rsi:.1f} | preu={preu_actual:.2f}$")
 
