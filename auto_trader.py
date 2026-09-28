@@ -28,6 +28,9 @@ from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 
+# ---------------------------------------------------------------------------
+# Funció de notificació per Telegram
+# ---------------------------------------------------------------------------
 def enviar_telegram(missatge):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -90,19 +93,19 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
 
 
 def obtenir_rsi_i_preu_actual(symbol: str):
-    """Obté el preu exacte en temps real i el RSI basat en barres d'1 hora."""
+    """Obté el darrer preu d'Alpaca en temps real i el RSI basat en barres d'1 hora."""
     preu_actual = None
 
-    # 1. Obtenir l'últim preu realitzat a la borsa (temps real)
+    # 1. Obtenir l'últim trade realitzat a la borsa
     try:
         trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         trade_resp = data_client.get_stock_latest_trade(trade_req)
         if symbol in trade_resp:
             preu_actual = float(trade_resp[symbol].price)
     except Exception as e:
-        print(f"⚠️ {symbol}: error obtenint preu en temps real: {e}")
+        print(f"⚠️ {symbol}: error obtenint trade en temps real: {e}")
 
-    # 2. Obtenir barres d'1 hora per a un RSI dinàmic durant la jornada
+    # 2. Obtenir barres d'1 hora per a un RSI intradiari
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
@@ -117,7 +120,7 @@ def obtenir_rsi_i_preu_actual(symbol: str):
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # Si ha fallat la cerca de preu en temps real, fem servir la darrera barra d'hora
+    # Si ha fallat la cerca de trade, fem servir la darrera barra
     if preu_actual is None and tancaments:
         preu_actual = tancaments[-1]
 
@@ -134,6 +137,15 @@ def obtenir_informacio_compte():
     except Exception as e:
         print(f"⚠️ Error obtenint dades del compte: {e}")
         return None, None
+
+
+def mercat_esta_obert() -> bool:
+    """Comprova si la borsa dels EUA està actualment oberta."""
+    try:
+        clock = trading_client.get_clock()
+        return clock.is_open
+    except Exception:
+        return False
 
 
 def ja_tinc_posicio(symbol: str) -> bool:
@@ -206,10 +218,11 @@ def revisar_oportunitats():
         llista_text = "\n".join(informacio_actius)
         equity, cash = obtenir_informacio_compte()
         text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total cartera: `${equity:.2f}`\n• En efectiu: `${cash:.2f}`" if equity is not None else ""
+        estat_mercat = "🟢 Mercat OBERT" if mercat_esta_obert() else "🔴 Mercat TANCAT (Preus fics)"
 
         msg_resum = (
             f"ℹ️ **Sense operacions de compra**\n"
-            f"No s'ha complert cap condició de compra.\n\n"
+            f"Estat: {estat_mercat}\n\n"
             f"📊 **Estat de les 4 variables:**\n"
             f"{llista_text}"
             f"{text_compte}"
@@ -221,3 +234,4 @@ if __name__ == "__main__":
     print("🤖 Revisant senyals de compra (RSI) a la cistella diversificada...")
     revisar_oportunitats()
     print("✅ Revisió de compra acabada.")
+
