@@ -50,7 +50,7 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 if not API_KEY or not SECRET_KEY:
     raise RuntimeError("Falten ALPACA_API_KEY / ALPACA_SECRET_KEY (variables d'entorn).")
 
-# ⚠️ Canvia paper=True si utilitzes el compte de Paper Trading de prova
+# ⚠️ LIVE TRADING: paper=False -> diners REALS. (Canviar a True si és Paper)
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=False)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
@@ -153,20 +153,14 @@ def ja_tinc_posicio(symbol: str) -> bool:
         return False
 
 
-def comprar(symbol: str, preu_actual: float, rsi: float):
+def comprar(symbol: str, preu_actual: float, rsi: float) -> bool:
+    """Executa la compra si hi ha saldo suficient. Retorna True si s'executa amb èxit, False si falla."""
     equity, cash = obtenir_informacio_compte()
 
-    # 1. Validació de saldo en efectiu abans de fer la petició
+    # Validació de saldo abans d'enviar l'ordre
     if cash is not None and cash < ASSIGNACIO_PER_ACTIU:
-        msg_error = (
-            f"⚠️ **SENYAL DE COMPRA OMESA ({symbol})**\n"
-            f"• **RSI:** `{rsi:.1f}`\n"
-            f"• **Motiu:** Saldo insuficient en efectiu.\n"
-            f"• **Efectiu disponible:** `${cash:.2f}` (es necessiten `${ASSIGNACIO_PER_ACTIU:.2f}`)"
-        )
         print(f"⚠️ Saldo insuficient per comprar {symbol}: ${cash:.2f} disponible.")
-        enviar_telegram(msg_error)
-        return
+        return False
 
     quantitat = round(ASSIGNACIO_PER_ACTIU / preu_actual, 4)
     order_data = MarketOrderRequest(
@@ -176,7 +170,6 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
         time_in_force=TimeInForce.DAY,
     )
 
-    # 2. Execució d'ordre protegit contra excepcions
     try:
         ordre = trading_client.submit_order(order_data)
         print(f"✅ COMPRA realitzada: {quantitat} de {symbol} (~{ASSIGNACIO_PER_ACTIU}$) — ID: {ordre.id}")
@@ -191,10 +184,11 @@ def comprar(symbol: str, preu_actual: float, rsi: float):
             f"{text_compte}"
         )
         enviar_telegram(msg)
+        return True
 
     except Exception as e:
         print(f"❌ Error en executar la compra de {symbol}: {e}")
-        enviar_telegram(f"❌ **Error en la compra de {symbol}:** {e}")
+        return False
 
 
 def revisar_oportunitats():
@@ -217,16 +211,21 @@ def revisar_oportunitats():
             informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}` *(Posició oberta)*")
             continue
 
-        informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}`")
-
-        # Senyal de compra: RSI < 40
+        # Avaluar senyal de compra (RSI < 40)
         if rsi < RSI_SOBREVENUT:
             print(f"🟢 {symbol}: RSI sobrevenut ({rsi:.1f} < {RSI_SOBREVENUT}). Executant compra...")
-            comprar(symbol, preu_actual, rsi)
-            compra_efectuada = True
+            exit_compra = comprar(symbol, preu_actual, rsi)
+            
+            if exit_compra:
+                compra_efectuada = True
+            else:
+                # Si ha fallat la compra (ex: falta de saldo), ho anotem a la llista del resum
+                informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}` ⚠️ *(Intenta comprar: Error/Sense saldo)*")
         else:
             print(f"{symbol}: sense senyal de compra (RSI {rsi:.1f}).")
+            informacio_actius.append(f"• **{symbol}**: Preu = `${preu_actual:.2f}` | RSI = `{rsi:.1f}`")
 
+    # Si NO s'ha completat cap compra amb èxit, s'envia el resum de TOTS els actius
     if not compra_efectuada:
         llista_text = "\n".join(informacio_actius)
         equity, cash = obtenir_informacio_compte()
@@ -234,7 +233,7 @@ def revisar_oportunitats():
         estat_mercat = "🟢 Mercat OBERT" if mercat_esta_obert() else "🔴 Mercat TANCAT"
 
         msg_resum = (
-            f"ℹ️ **Sense operacions de compra**\n"
+            f"ℹ️ **Resum de mercat**\n"
             f"Estat: {estat_mercat}\n\n"
             f"📊 **Variables (RSI < 40 per comprar):**\n"
             f"{llista_text}"
