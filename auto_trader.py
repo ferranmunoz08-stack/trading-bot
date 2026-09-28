@@ -26,7 +26,6 @@ from datetime import datetime, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
-from alpaca.data.enums import DataFeed
 
 # ---------------------------------------------------------------------------
 # Funció de notificació per Telegram
@@ -93,37 +92,36 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
 
 
 def obtenir_rsi_i_preu_actual(symbol: str):
-    """Obté el preu exactament igual que apareix a Alpaca i calcula el RSI."""
+    """Obté el preu real del mateix canal que la web d'Alpaca i calcula el RSI."""
     preu_actual = None
 
-    # 1. Obtenir l'última cotització directa (Quote: Bid/Ask) de la mateixa font d'Alpaca
+    # 1. Obtenir l'últim trade en temps real (sense limitació IEX)
     try:
-        quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        quote_resp = data_client.get_stock_latest_quote(quote_req)
-        if symbol in quote_resp:
-            q = quote_resp[symbol]
-            preu_actual = float(q.ask_price or q.bid_price or 0.0)
-            if preu_actual == 0:
-                preu_actual = None
+        trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol)
+        trade_resp = data_client.get_stock_latest_trade(trade_req)
+        if symbol in trade_resp and trade_resp[symbol].price > 0:
+            preu_actual = float(trade_resp[symbol].price)
     except Exception as e:
-        print(f"⚠️ {symbol}: error obtenint quote ({e})")
+        print(f"⚠️ {symbol}: error obtenint trade ({e})")
 
-    # 2. Si no hi ha quote, provem el darrer Trade
+    # 2. Si no hi ha trade, agafar l'últim Quote (Bid/Ask)
     if preu_actual is None:
         try:
-            trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-            trade_resp = data_client.get_stock_latest_trade(trade_req)
-            if symbol in trade_resp and trade_resp[symbol].price > 0:
-                preu_actual = float(trade_resp[symbol].price)
+            quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            quote_resp = data_client.get_stock_latest_quote(quote_req)
+            if symbol in quote_resp:
+                q = quote_resp[symbol]
+                preu_actual = float(q.ask_price or q.bid_price or 0.0)
+                if preu_actual == 0:
+                    preu_actual = None
         except Exception as e:
-            print(f"⚠️ {symbol}: error obtenint trade ({e})")
+            print(f"⚠️ {symbol}: error obtenint quote ({e})")
 
-    # 3. Obtenir barres per calcular el RSI
+    # 3. Obtenir barres d'1 hora per calcular el RSI (sense limitació IEX)
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
         start=datetime.now() - timedelta(days=30),
-        feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
 
