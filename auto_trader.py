@@ -93,36 +93,36 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
 
 
 def obtenir_rsi_i_preu_actual(symbol: str):
-    """Obté el preu actual (o darrer de tancament si està tancat) i el RSI."""
+    """Obté el preu exactament igual que apareix a Alpaca i calcula el RSI."""
     preu_actual = None
 
-    # 1. Prova d'obtenir l'últim trade realitzat
+    # 1. Obtenir l'última cotització directa (Quote: Bid/Ask) de la mateixa font d'Alpaca
     try:
-        trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        trade_resp = data_client.get_stock_latest_trade(trade_req)
-        if symbol in trade_resp and trade_resp[symbol].price > 0:
-            preu_actual = float(trade_resp[symbol].price)
+        quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        quote_resp = data_client.get_stock_latest_quote(quote_req)
+        if symbol in quote_resp:
+            q = quote_resp[symbol]
+            preu_actual = float(q.ask_price or q.bid_price or 0.0)
+            if preu_actual == 0:
+                preu_actual = None
     except Exception as e:
-        print(f"⚠️ {symbol}: no s'ha trobat trade recent ({e})")
+        print(f"⚠️ {symbol}: error obtenint quote ({e})")
 
-    # 2. Si no hi ha trade, prova d'obtenir l'últim Quote (Ask/Bid)
+    # 2. Si no hi ha quote, provem el darrer Trade
     if preu_actual is None:
         try:
-            quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-            quote_resp = data_client.get_stock_latest_quote(quote_req)
-            if symbol in quote_resp:
-                q = quote_resp[symbol]
-                preu_actual = float(q.ask_price or q.bid_price or 0.0)
-                if preu_actual == 0:
-                    preu_actual = None
+            trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+            trade_resp = data_client.get_stock_latest_trade(trade_req)
+            if symbol in trade_resp and trade_resp[symbol].price > 0:
+                preu_actual = float(trade_resp[symbol].price)
         except Exception as e:
-            print(f"⚠️ {symbol}: error en quote ({e})")
+            print(f"⚠️ {symbol}: error obtenint trade ({e})")
 
-    # 3. Obtenir barres d'1 hora per calcular l'RSI i com a últim recurs de preu
+    # 3. Obtenir barres per calcular el RSI
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
-        start=datetime.now() - timedelta(days=30),  # Marge ampli per cobrir caps de setmana
+        start=datetime.now() - timedelta(days=30),
         feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
@@ -133,7 +133,7 @@ def obtenir_rsi_i_preu_actual(symbol: str):
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # Si encara no teníem preu, agafem el tancament de l'última barra disponible
+    # Marge de seguretat si no hem pogut obtenir cap preu directe:
     if preu_actual is None or preu_actual == 0:
         if tancaments:
             preu_actual = tancaments[-1]
