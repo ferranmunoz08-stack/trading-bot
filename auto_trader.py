@@ -24,7 +24,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from datetime import datetime, timedelta
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 
@@ -93,38 +93,53 @@ def calcular_rsi(preus_tancament, periode=RSI_PERIODE):
 
 
 def obtenir_rsi_i_preu_actual(symbol: str):
-    """Obté el darrer preu d'Alpaca en temps real i el RSI basat en barres d'1 hora."""
+    """Obté el preu actual (o darrer de tancament si està tancat) i el RSI."""
     preu_actual = None
 
-    # 1. Obtenir l'últim trade realitzat a la borsa
+    # 1. Prova d'obtenir l'últim trade realitzat
     try:
         trade_req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         trade_resp = data_client.get_stock_latest_trade(trade_req)
-        if symbol in trade_resp:
+        if symbol in trade_resp and trade_resp[symbol].price > 0:
             preu_actual = float(trade_resp[symbol].price)
     except Exception as e:
-        print(f"⚠️ {symbol}: error obtenint trade en temps real: {e}")
+        print(f"⚠️ {symbol}: no s'ha trobat trade recent ({e})")
 
-    # 2. Obtenir barres d'1 hora per a un RSI intradiari
+    # 2. Si no hi ha trade, prova d'obtenir l'últim Quote (Ask/Bid)
+    if preu_actual is None:
+        try:
+            quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+            quote_resp = data_client.get_stock_latest_quote(quote_req)
+            if symbol in quote_resp:
+                q = quote_resp[symbol]
+                preu_actual = float(q.ask_price or q.bid_price or 0.0)
+                if preu_actual == 0:
+                    preu_actual = None
+        except Exception as e:
+            print(f"⚠️ {symbol}: error en quote ({e})")
+
+    # 3. Obtenir barres d'1 hora per calcular l'RSI i com a últim recurs de preu
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Hour,
-        start=datetime.now() - timedelta(days=15),
+        start=datetime.now() - timedelta(days=30),  # Marge ampli per cobrir caps de setmana
         feed=DataFeed.IEX,
     )
     resposta = data_client.get_stock_bars(request)
 
     if symbol not in resposta.data or not resposta.data[symbol]:
-        print(f"⚠️ {symbol}: no s'han rebut dades històriques (resposta buida).")
+        print(f"⚠️ {symbol}: no s'han rebut dades històriques d'Alpaca.")
         return None, preu_actual
 
     tancaments = [float(b.close) for b in resposta.data[symbol]]
     
-    # Si ha fallat la cerca de trade, fem servir la darrera barra
-    if preu_actual is None and tancaments:
-        preu_actual = tancaments[-1]
+    # Si encara no teníem preu, agafem el tancament de l'última barra disponible
+    if preu_actual is None or preu_actual == 0:
+        if tancaments:
+            preu_actual = tancaments[-1]
 
-    return calcular_rsi(tancaments), preu_actual
+    rsi = calcular_rsi(tancaments)
+    return rsi, preu_actual
 
 
 def obtenir_informacio_compte():
@@ -218,7 +233,7 @@ def revisar_oportunitats():
         llista_text = "\n".join(informacio_actius)
         equity, cash = obtenir_informacio_compte()
         text_compte = f"\n\n💰 **Compte Alpaca:**\n• Total cartera: `${equity:.2f}`\n• En efectiu: `${cash:.2f}`" if equity is not None else ""
-        estat_mercat = "🟢 Mercat OBERT" if mercat_esta_obert() else "🔴 Mercat TANCAT (Preus fics)"
+        estat_mercat = "🟢 Mercat OBERT" if mercat_esta_obert() else "🔴 Mercat TANCAT"
 
         msg_resum = (
             f"ℹ️ **Sense operacions de compra**\n"
@@ -234,4 +249,3 @@ if __name__ == "__main__":
     print("🤖 Revisant senyals de compra (RSI) a la cistella diversificada...")
     revisar_oportunitats()
     print("✅ Revisió de compra acabada.")
-
